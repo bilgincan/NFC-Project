@@ -20,6 +20,7 @@ set(APP_SOURCES
     Core/Src/stm32f0xx_it.c
     Core/Src/system_stm32f0xx.c
     Core/Src/mfrc522.c
+    Core/Src/syscalls.c
     Core/Startup/startup_stm32f072xb.s
 )
 

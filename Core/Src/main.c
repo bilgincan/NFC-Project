@@ -15,16 +15,20 @@
 
 #include "main.h"
 #include "mfrc522.h"
+#include <stdio.h>
 
 /* How long to hold LD2 (and, later, a real lock actuator) on after a
  * successful read. */
 #define UNLOCK_PULSE_MS 1500U
 
 static SPI_HandleTypeDef hspi1;
+UART_HandleTypeDef huart2;
 
 static void SystemClock_Config(void);
 static void LD2_GPIO_Init(void);
 static void SPI1_Init(void);
+static void USART2_Init(void);
+static void PrintUID(const MFRC522_UID *uid);
 
 int main(void)
 {
@@ -33,6 +37,11 @@ int main(void)
 
   /* Configure the system clock (HSI -> PLL -> 48 MHz SYSCLK). */
   SystemClock_Config();
+
+  /* Debug UART first, so every later step can log over it. */
+  USART2_Init();
+  setvbuf(stdout, NULL, _IONBF, 0); /* flush printf() straight to the UART, don't wait for a full buffer */
+  printf("\r\n--- nfc-door-opener booting ---\r\n");
 
   /* Initialize the LED GPIO and the MFRC522 reader. */
   LD2_GPIO_Init();
@@ -46,10 +55,14 @@ int main(void)
    * card - fail loud (fast blink) instead of just sitting there silently
    * never detecting anything. */
   uint8_t version = MFRC522_GetVersion();
+  printf("MFRC522 VersionReg = 0x%02X\r\n", version);
   if (version == 0x00 || version == 0xFF)
   {
+    printf("No response from the reader - check wiring/power.\r\n");
     Error_Handler();
   }
+
+  printf("Ready - scan a card.\r\n");
 
   while (1)
   {
@@ -57,6 +70,8 @@ int main(void)
 
     if (MFRC522_IsNewCardPresent() && MFRC522_ReadCardSerial(&uid))
     {
+      PrintUID(&uid);
+
       /* Card read: switch the light on. */
       HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
       HAL_Delay(UNLOCK_PULSE_MS);
@@ -68,6 +83,19 @@ int main(void)
       MFRC522_HaltA();
     }
   }
+}
+
+/**
+  * @brief Print a scanned card's UID (and SAK) as hex, e.g. "DE AD BE EF".
+  */
+static void PrintUID(const MFRC522_UID *uid)
+{
+  printf("Card detected, UID:");
+  for (uint8_t i = 0; i < uid->size; i++)
+  {
+    printf(" %02X", uid->uidByte[i]);
+  }
+  printf("  (SAK=0x%02X)\r\n", uid->sak);
 }
 
 /**
@@ -124,6 +152,40 @@ static void SPI1_Init(void)
   hspi1.Init.CRCCalculation    = SPI_CRCCALCULATION_DISABLE;
   hspi1.Init.CRCPolynomial     = 7;
   if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief Configure USART2 (PA2=TX/PA3=RX) at 115200 8N1 - this is wired
+  *        straight to the ST-LINK's virtual COM port on the Nucleo board,
+  *        so no external USB-serial adapter is needed. printf() is
+  *        retargeted onto it via _write() in Core/Src/syscalls.c.
+  */
+static void USART2_Init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  DEBUG_USART_CLK_ENABLE();
+  DEBUG_USART_GPIO_CLK_ENABLE();
+
+  GPIO_InitStruct.Pin       = DEBUG_USART_TX_PIN | DEBUG_USART_RX_PIN;
+  GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Pull      = GPIO_PULLUP;
+  GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_HIGH;
+  GPIO_InitStruct.Alternate = DEBUG_USART_AF;
+  HAL_GPIO_Init(DEBUG_USART_GPIO_PORT, &GPIO_InitStruct);
+
+  huart2.Instance          = DEBUG_USART;
+  huart2.Init.BaudRate     = DEBUG_USART_BAUDRATE;
+  huart2.Init.WordLength   = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits     = UART_STOPBITS_1;
+  huart2.Init.Parity       = UART_PARITY_NONE;
+  huart2.Init.Mode         = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl    = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
   {
     Error_Handler();
   }
